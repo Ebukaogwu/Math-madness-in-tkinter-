@@ -1,0 +1,261 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import random
+import operator
+import time
+
+# -------------------------
+# Math problem generator
+# -------------------------
+OPS = {
+    '+': operator.add,
+    '-': operator.sub,
+    '×': operator.mul,
+    '÷': operator.truediv,
+}
+
+DIFFICULTY_CONFIG = {
+    "Easy":    {"min": 1,  "max": 10,   "ops": ['+', '-']},
+    "Medium":  {"min": 1,  "max": 20,   "ops": ['+', '-', '×']},
+    "Hard":    {"min": 1,  "max": 50,   "ops": ['+', '-', '×', '÷']},
+}
+
+def make_problem(difficulty="Easy"):
+    cfg = DIFFICULTY_CONFIG[difficulty]
+    a = random.randint(cfg["min"], cfg["max"])
+    b = random.randint(cfg["min"], cfg["max"])
+    op = random.choice(cfg["ops"])
+    # avoid non-integer division answers for simplicity — keep division with integer result
+    if op == '÷':
+        # make a divisible pair
+        b = random.randint(1, cfg["max"])
+        a = b * random.randint(1, max(1, cfg["max"] // max(1, b)))
+    return a, op, b
+
+def evaluate(a, op, b):
+    func = OPS[op]
+    try:
+        result = func(a, b)
+    except Exception:
+        return None
+    # round floats sensibly
+    if op == '÷':
+        return round(result, 2)
+    return int(result)
+
+# -------------------------
+# Main App
+# -------------------------
+class MathMadness(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Math Madness — Calculator Game")
+        self.resizable(False, False)
+        self.configure(padx=12, pady=12)
+
+        # Game state
+        self.difficulty = tk.StringVar(value="Easy")
+        self.round_time = tk.IntVar(value=30)  # seconds per round
+        self.score = 0
+        self.streak = 0
+        self.current_answer = ""
+        self.current_problem = None
+        self.time_left = 0
+        self.running = False
+
+        self._build_ui()
+        self.bind_all("<Key>", self._on_keypress)
+
+    def _build_ui(self):
+        top_frame = ttk.Frame(self)
+        top_frame.grid(row=0, column=0, sticky="ew", pady=(0,8))
+
+        ttk.Label(top_frame, text="Difficulty:").grid(row=0, column=0, sticky="w")
+        diff = ttk.Combobox(top_frame, textvariable=self.difficulty, values=list(DIFFICULTY_CONFIG.keys()), state="readonly", width=8)
+        diff.grid(row=0, column=1, sticky="w", padx=(6,12))
+        diff.bind("<<ComboboxSelected>>", lambda e: self._new_problem())
+
+        ttk.Label(top_frame, text="Time (s):").grid(row=0, column=2, sticky="w")
+        time_spin = ttk.Spinbox(top_frame, from_=5, to=120, textvariable=self.round_time, width=5)
+        time_spin.grid(row=0, column=3, sticky="w", padx=(6,12))
+
+        start_btn = ttk.Button(top_frame, text="Start Round", command=self.start_round)
+        start_btn.grid(row=0, column=4, sticky="e")
+
+        # Problem / display area
+        display = ttk.Frame(self, relief="ridge", padding=10)
+        display.grid(row=1, column=0, sticky="ew")
+
+        self.problem_var = tk.StringVar(value="Press Start")
+        self.display_var = tk.StringVar(value="")
+
+        lbl_problem = ttk.Label(display, textvariable=self.problem_var, font=("Segoe UI", 20))
+        lbl_problem.grid(row=0, column=0, sticky="w")
+
+        lbl_input = ttk.Label(display, textvariable=self.display_var, font=("Consolas", 24), anchor="e")
+        lbl_input.grid(row=1, column=0, sticky="ew", pady=(8,0))
+
+        status = ttk.Frame(self)
+        status.grid(row=2, column=0, sticky="ew", pady=(8,8))
+
+        self.score_var = tk.StringVar(value=f"Score: {self.score}")
+        self.streak_var = tk.StringVar(value=f"Streak: {self.streak}")
+        self.timer_var = tk.StringVar(value="Time: 0s")
+
+        ttk.Label(status, textvariable=self.score_var).grid(row=0, column=0, sticky="w", padx=(0,10))
+        ttk.Label(status, textvariable=self.streak_var).grid(row=0, column=1, sticky="w", padx=(0,10))
+        ttk.Label(status, textvariable=self.timer_var).grid(row=0, column=2, sticky="w")
+
+        # Calculator keypad
+        keypad = ttk.Frame(self)
+        keypad.grid(row=3, column=0)
+
+        buttons = [
+            ('7', '8', '9', '⌫'),
+            ('4', '5', '6', 'C'),
+            ('1', '2', '3', '±'),
+            ('0', '.', '=', 'Submit'),
+        ]
+
+        for r, row in enumerate(buttons):
+            for c, key in enumerate(row):
+                b = ttk.Button(keypad, text=key, command=lambda k=key: self._on_button(k), width=6)
+                b.grid(row=r, column=c, padx=4, pady=4)
+
+        # bottom controls
+        bottom = ttk.Frame(self)
+        bottom.grid(row=4, column=0, sticky="ew", pady=(8,0))
+        ttk.Button(bottom, text="Skip (−1)", command=self.skip_problem).grid(row=0, column=0, padx=(0,6))
+        ttk.Button(bottom, text="Reset Score", command=self.reset_score).grid(row=0, column=1, padx=(0,6))
+        ttk.Button(bottom, text="Quit", command=self.quit).grid(row=0, column=2)
+
+    # -------------------------
+    # Game operations
+    # -------------------------
+    def start_round(self):
+        if self.running:
+            # already running -> restart
+            self.stop_round()
+        self.score = 0
+        self.streak = 0
+        self._update_status()
+        self.time_left = self.round_time.get()
+        self.running = True
+        self._new_problem()
+        self._tick()
+
+    def stop_round(self):
+        self.running = False
+        self.timer_var.set("Time: 0s")
+
+    def _new_problem(self):
+        a, op, b = make_problem(self.difficulty.get())
+        self.current_problem = (a, op, b)
+        self.problem_var.set(f"{a} {op} {b} = ?")
+        self.current_answer = ""
+        self.display_var.set(self.current_answer)
+
+    def _on_button(self, key):
+        if key.isdigit():
+            self.current_answer += key
+        elif key == '.':
+            if '.' not in self.current_answer:
+                if self.current_answer == '':
+                    self.current_answer = '0.'
+                else:
+                    self.current_answer += '.'
+        elif key == 'C':
+            self.current_answer = ''
+        elif key == '⌫':
+            self.current_answer = self.current_answer[:-1]
+        elif key == '±':
+            if self.current_answer.startswith('-'):
+                self.current_answer = self.current_answer[1:]
+            else:
+                self.current_answer = '-' + self.current_answer if self.current_answer else '-'
+        elif key in ('=', 'Submit'):
+            self.submit_answer()
+            return
+        self.display_var.set(self.current_answer)
+
+    def _on_keypress(self, event):
+        k = event.keysym
+        if k in '0123456789':
+            self._on_button(k)
+        elif k == 'period' or k == 'decimal' or event.char == '.':
+            self._on_button('.')
+        elif k in ('BackSpace',):
+            self._on_button('⌫')
+        elif k in ('Return', 'KP_Enter'):
+            self.submit_answer()
+        elif k.lower() == 'c':
+            self._on_button('C')
+
+    def submit_answer(self):
+        if not self.current_problem:
+            return
+        if self.current_answer == '':
+            messagebox.showinfo("No answer", "Please enter an answer before submitting.")
+            return
+        a, op, b = self.current_problem
+        correct = evaluate(a, op, b)
+        # try to convert input to number
+        try:
+            if '.' in self.current_answer:
+                user_val = round(float(self.current_answer), 2)
+            else:
+                user_val = int(self.current_answer)
+        except ValueError:
+            messagebox.showinfo("Invalid", "Answer not a number.")
+            return
+
+        if user_val == correct:
+            self.score += 10
+            self.streak += 1
+            feedback = f"Correct! +10 (Ans={correct})"
+        else:
+            self.score -= 5
+            self.streak = 0
+            feedback = f"Wrong! -5 (Ans={correct})"
+        self._update_status()
+        # show quick feedback in title
+        self.after(10, lambda: self._flash_feedback(feedback))
+        self._new_problem()
+
+    def skip_problem(self):
+        # penalty for skipping
+        self.score -= 1
+        self.streak = 0
+        self._update_status()
+        self._new_problem()
+
+    def reset_score(self):
+        if messagebox.askyesno("Reset", "Reset score and streak?"):
+            self.score = 0
+            self.streak = 0
+            self._update_status()
+
+    def _update_status(self):
+        self.score_var.set(f"Score: {self.score}")
+        self.streak_var.set(f"Streak: {self.streak}")
+
+    def _flash_feedback(self, text):
+        old = self.title()
+        self.title(text)
+        self.after(600, lambda: self.title(old))
+
+    def _tick(self):
+        if not self.running:
+            return
+        if self.time_left <= 0:
+            self.running = False
+            self.timer_var.set("Time: 0s")
+            messagebox.showinfo("Time's up!", f"Round finished!\nYour score: {self.score}")
+            return
+        self.timer_var.set(f"Time: {self.time_left}s")
+        self.time_left -= 1
+        self.after(1000, self._tick)
+
+if __name__ == "__main__":
+    app = MathMadness()
+    app.mainloop()
